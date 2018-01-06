@@ -1,0 +1,489 @@
+hive json
+https://stackoverflow.com/questions/41453646/loading-json-file-in-hive-table
+https://github.com/rcongiu/Hive-JSON-Serde
+Download the latest binaries (json-serde-X.Y.Z-jar-with-dependencies.jar and json-udf-X.Y.Z-jar-with-dependencies.jar) from congiu.net/hive-json-serde. Choose the correct verson for CDH 4, CDH 5 or Hadoop 2.3. Place the JARs into hive/lib or use ADD JAR in Hive.
+
+sudo -u hdfs hdfs dfs -mkdir /user/hive/lib
+sudo -u hdfs hdfs dfs -put ../json-serde-1.3.8-jar-with-dependencies.jar /user/hive/lib/
+
+add jar hdfs:///user/hive/lib/json-serde-1.3.8-jar-with-dependencies.jar;
+add jar /home/russel_ebizu/json-serde-1.3.8-jar-with-dependencies.jar (Didn't work)
+
+create table if not exists part6json(
+ latitude double,
+ longitude double,
+ time timestamp,
+ placeIds string,
+ applicationId string,
+ dataSource string,
+ externalKeyName string,
+ externalKeyValue string,
+ lonLat string,
+ id string,
+ idType string,
+ os string,
+ osVersion string,
+ model string,
+ manufacturer string,
+ gender string,
+ created string,
+ updated timestamp,
+ dataSources string,
+ deviceToken string,
+ sdkLtDeviceId string,
+ manisAccId string,
+ email string,
+ epochBirthday string,
+ carrier string,
+ aerospikeKey string) 
+ row format serde 'org.openx.data.jsonserde.JsonSerDe'  location 'hdfs:///user/hive/warehouse/clustergps/part6_json/';
+
+ "aerospikeKey,applicationId,carrier,created,dataSource,dataSources.0,dataSources.1,deviceToken,email,
+ epochBirthday,externalKeyName,externalKeyValue,gender,id,idType,latitude,lonLat.0,lonLat.1,longitude,
+ manisAccId,manufacturer,model,os,osVersion,placeIds,sdkLtDeviceId,timestamp,updated"
+ 
+create external table if not exists part6( 
+ aerospikeKey string,
+ applicationId string,
+ carrier string,
+ created int,
+ dataSource string,
+ dataSources0 string,
+ dataSources1 string,
+ deviceToken string,
+ email string,
+ epochBirthday string,
+ externalKeyName string,
+ externalKeyValue string,
+ gender string,
+ id string,
+ idType string,
+ latitude double,
+ lonLat0 string,
+ lonLat1 string,
+ longitude double,
+ manisAccId string,
+ manufacturer string,
+ model string,
+ os string,
+ osVersion string,
+ placeIds string,
+ sdkLtDeviceId string,
+ time int,
+ updated int)
+row format delimited 
+fields terminated by ',' 
+lines terminated by '\n' 
+location 'hdfs:///user/hive/warehouse/clustergps/part6/';
+
+scala
+https://stackoverflow.com/questions/44234397/how-to-aggregate-map-columns-after-groupby
+
+#spark-shell with sqlcontext
+sudo -u hdfs spark-shell --master local[2]
+
+http://beekeeperdata.com/posts/hadoop/2015/08/17/hive-udaf-tutorial.html
+https://www.placeiq.com/2017/07/pointsofinterest_udafsinsparkdataframes/
+https://stackoverflow.com/questions/32100973/how-to-define-and-use-a-user-defined-aggregate-function-in-spark-sql
+
+In Spark 1.5 you can create UDAF like this although it is most likely an overkill:
+
+import org.apache.spark.sql.expressions._
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.Row
+
+object belowThreshold extends UserDefinedAggregateFunction {
+    // Schema you get as an input
+    def inputSchema = new StructType().add("power", IntegerType)
+    // Schema of the row which is used for aggregation
+    def bufferSchema = new StructType().add("ind", BooleanType)
+    // Returned type
+    def dataType = BooleanType
+    // Self-explaining 
+    def deterministic = true
+    // zero value
+    def initialize(buffer: MutableAggregationBuffer) = buffer.update(0, false)
+    // Similar to seqOp in aggregate
+    def update(buffer: MutableAggregationBuffer, input: Row) = {
+        if (!input.isNullAt(0))
+          buffer.update(0, buffer.getBoolean(0) | input.getInt(0) < -40)
+    }
+    // Similar to combOp in aggregate
+    def merge(buffer1: MutableAggregationBuffer, buffer2: Row) = {
+      buffer1.update(0, buffer1.getBoolean(0) | buffer2.getBoolean(0))    
+    }
+    // Called on exit to get return value
+    def evaluate(buffer: Row) = buffer.getBoolean(0)
+}
+
+    //Extend UserDefinedAggregateFunction to write custom aggregate function
+    //You can also specify any constructor arguments. For instance you
+    //can have CustomMean(arg1: Int, arg2: String)
+    class CustomMean() extends UserDefinedAggregateFunction {
+
+      // Input Data Type Schema
+      def inputSchema: StructType = StructType(Array(
+        StructField("id", StringType),
+        StructField("hr", IntegerType),
+        StructField("latitude", DoubleType),
+        StructField("longitude", DoubleType)
+      ))
+
+      // Intermediate Schema
+      def bufferSchema = StructType(Array(
+        StructField("sum", DoubleType),
+        StructField("cnt", LongType)
+      ))
+
+      // Returned Data Type .
+      def dataType: StructType = StructType(Array(
+        StructField("id", StringType),
+        StructField("latitude", DoubleType),
+        StructField("longitude", DoubleType),
+        StructField("conf", DoubleType)
+      ))
+
+      // Self-explaining
+      def deterministic = true
+
+      // This function is called whenever key changes
+      def initialize(buffer: MutableAggregationBuffer) = {
+        buffer(0) = 0.toDouble // set sum to zero
+        buffer(1) = 0L // set number of items to 0
+      }
+
+      // Iterate over each entry of a group
+      def update(buffer: MutableAggregationBuffer, input: Row) = {
+        buffer(0) = buffer.getDouble(0) + input.getDouble(0)
+        buffer(1) = buffer.getLong(1) + 1
+      }
+
+      // Merge two partial aggregates
+      def merge(buffer1: MutableAggregationBuffer, buffer2: Row) = {
+        buffer1(0) = buffer1.getDouble(0) + buffer2.getDouble(0)
+        buffer1(1) = buffer1.getLong(1) + buffer2.getLong(1)
+      }
+
+      // Called after all the entries are exhausted.
+      def evaluate(buffer: Row) = {
+        buffer.getDouble(0)/buffer.getLong(1).toDouble
+      }
+
+    }
+	
+	https://blogs.msdn.microsoft.com/bigdatasupport/2015/09/24/a-kmeans-example-for-spark-mllib-on-hdinsight/
+	
+	https://www.programcreek.com/scala/org.apache.spark.ml.clustering.KMeans
+	https://databricks.gitbooks.io/databricks-spark-reference-applications/content/twitter_classifier/scala/src/main/scala/com/databricks/apps/twitter_classifier/ExamineAndTrain.scala
+	
+	###################
+	miscellaneous
+	##################
+	   val sqlContext = new SQLContext(sc)
+
+    val dataFrame = sqlContext.sql("SELECT * FROM clustergps.part6 limit 100")
+      .map(_.head.toString)
+      .groupBy("id", "hr")
+
+    // Cache the vectors RDD since it will be used for all the KMeans iterations.
+    val vectors = texts.map(Utils.featurize).cache()
+    vectors.count()  // Calls an action on the RDD to populate the vectors cache.
+    val model = KMeans.train(vectors, numClusters, numIterations)
+    sc.makeRDD(model.clusterCenters, numClusters).saveAsObjectFile(outputModelDir)
+
+    sqlContext.udf.register("toVector", (a: Double, b: Double, c:Double,  d:Double) => Vectors.dense(a, b, c, d))
+
+    val features = dataFrame.selectExpr("toVector(C0, C1, C2, C3) as feature", "C4 as name")
+
+    KMeans(dataFrame, 3, 2))
+
+    val numClusters = 2 // Value of K in Kmeans
+    val clusters = KMeans.train(dataFrame, numClusters, 20)
+
+    val NamesandData = dataFrame.map(s => (s.split(',')(0), Vectors.dense(s.split(',').drop(1).map(_.toDouble)))).cache()
+
+    val numer = dataFrame.as("this").withColumnRenamed("item", "this")
+      .join(df.as("other").withColumnRenamed("item", "other"), Seq("feature"))
+      .where($"this" < $"other")
+      .groupBy($"this", $"other")
+      .agg(sum($"this.value" * $"other.value").alias("dot"))
+	############################
+---------------	
+library(ndjson)
+library(dplyr)
+
+samplog <- stream_in("part6.log")
+
+samplog <- select(samplog, id, timestamp, latitude, longitude)
+
+samplog$timestamp <- as.POSIXct(samplog$timestamp/1000,origin='1970-01-01')
+
+samplog <- mutate(samplog, hr = hour(timestamp))
+
+write.table(samplog, "samplog.csv", quote = F, sep=",", row.names = F, col.names = F)
+
+system("head -n 2 samplog.csv")
+----
+
+create external table part6(id string, time1 timestamp, latitude double, longitude double, hr int) row format delimited
+fields terminated by ',' 
+lines terminated by '\n' 
+location 'hdfs:///user/hive/warehouse/clustergps/part6/';
+
+select * from part6 limit 1;
+------
+
+import org.apache.spark.ml.feature.VectorAssembler
+import org.apache.spark.ml.clustering.KMeans
+
+// assembler to collect all interesting columns into a single features column
+val assembler = (new VectorAssembler().
+                     setInputCols(Array("Ward", "Longitude", "X_Coordinate", "Beat", 
+                                        "Latitude", "District", "Y_Coordinate", 
+                                        "Community_Area")).
+                     setOutputCol("features"))   
+
+val data = assembler.transform(city)    
+val kmeans = new KMeans()
+val model = kmeans.fit(data)
+
+model.getK
+
+=======================
+http://site.clairvoyantsoft.com/installing-sparkr-on-a-hadoop-cluster/
+https://community.cloudera.com/t5/Advanced-Analytics-Apache-Spark/Run-SparkR-or-R-package-on-my-Cloudera-5-9-Spark/td-p/49019
+
+========
+kms <- function(key, idLogs){
+#  tryCatch(
+#  {
+    #idLogs <- sparklyr::ft_vector_assembler(idLogs, input_cols= c("latitude", "longitude"), output_col = "features")
+    
+    km  <- SparkR::spark.kmeans(data = idLogs, formula = ~ latitude + longitude, k = 3)
+
+    cluster <- SparkR::predict(km, idLogs)
+    
+    cluster$prediction <- cluster$prediction + 1
+    
+    clustCounts <- SparkR::collect(SparkR::count(groupBy(cluster, "prediction")))
+    
+    centers <- SparkR::summary(km)$coefficients
+    
+    centers <- Matrix::cBind(centers, centerid = as.numeric(rownames(centers)))
+    
+    clustCounts <- base::merge(clustCounts, centers, by.x="prediction", by.y="centerid")
+    
+    clustCounts$conf <- clustCounts$count/sum(clustCounts$count)
+    
+    clustCounts <- clustCounts[clustCounts$conf==max(clustCounts$conf),c("latitude", "longitude", "conf")]
+
+    return(clustCounts)
+#  }, error = function(e) {
+#    return(
+#      data.frame(result = c(substr(e, 1, 200)))
+#    )
+#  })
+}
+===================
+
+
+sudo rm /etc/alternatives/spark2R
+sudo rm /usr/bin/spark2R
+
+#remove previous version
+sudo rm -r /opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/bin/../lib/spark2/R
+
+#copy the R directory from the local spark install to the yarn install
+cd /home/rstudio/spark/spark-2.2.0-bin-hadoop2.7/
+
+sudo cp -r R /opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/bin/../lib/spark2/R
+
+#copy the sparkR to the yarn install
+cd bin
+sudo cp spark2R /opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/bin/../lib/spark2/bin/spark2R
+
+#copy the spark-shell startup script to start up sparkR
+#edit the shell script to point to the sparkR rather than spark-shell
+#replace path to spark-shell with path to the original sparkR in 
+#/opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/lib/spark2/bin/spark2R
+
+sudo cp /usr/bin/spark2-shell /opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/bin/spark2R
+sudo vim /opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/bin/spark2R
+
+cd /etc/alternatives/
+sudo ln -s /opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/bin/spark2R spark2R
+
+cd /usr/bin
+sudo ln -s /etc/alternatives/spark2R spark2R
+
+spark2R
+==============
+
+#sudo rm /etc/alternatives/sparkR
+#sudo rm /usr/bin/sparkR
+sudo rm -r /opt/cloudera/parcels/CDH/lib/spark/R
+
+cd /home/rstudio
+cd spark/spark-1.6.3-bin-hadoop2.6/
+
+sudo cp -r R /opt/cloudera/parcels/CDH/lib/spark/R
+cd bin
+sudo cp sparkR /opt/cloudera/parcels/CDH/lib/spark/R/bin
+
+#sudo cp /usr/bin/spark-shell /usr/bin/sparkR
+#sudo vim /usr/bin/sparkR
+
+#sudo cp /usr/bin/sparkR /opt/cloudera/parcels/CDH-5.13.0-1.cdh5.13.0.p0.29/bin/
+sudo rm /usr/bin/sparkR
+
+#cd /etc/alternatives/
+#sudo ln -s /opt/cloudera/parcels/CDH-5.9.0-1.cdh5.9.0.p0.23/bin/sparkR sparkR
+#cd /usr/bin
+#sudo ln -s /etc/alternatives/sparkR sparkR
+
+sudo rm /etc/alternatives/sparkR
+
+
+sparkR
+
+=============
+
+https://stackoverflow.com/questions/38577939/not-able-to-retrieve-data-from-sparkr-created-dataframe
+
+=========
+Final working script SparkR
+
+kms <- function(key, idLogs){
+  tryCatch(
+  {
+    id <- as.character(key[1])
+    
+    hr <- as.integer(key[2])
+    
+    if(length(unique(idLogs$latitude, idLogs$longitude)) < 3)
+    {
+      clustCounts <- data.frame(id=id, 
+                                hr=hr, 
+                                latitude=mean(idLogs$latitude), 
+                                longitude=mean(idLogs$longitude),
+                                conf=1/nrow(idLogs),
+                                stringsAsFactors = F)
+    }
+    else
+    {
+      idLogs <- dplyr::select(idLogs, latitude, longitude)
+      
+      km <- stats::kmeans(idLogs, centers = 3)
+      
+      centers <- km$centers
+      
+      centers <- cbind(centers, centerid=as.numeric(rownames(centers)))
+      
+      cluster <-  cbind(idLogs, prediction=km$cluster)
+      
+      clustCounts <- dplyr::mutate(dplyr::tally(dplyr::group_by(cluster, prediction)), conf=n/sum(n))
+    
+      clustCounts <- base::merge(clustCounts, centers, by.x="prediction", by.y="centerid")
+      
+      clustCounts <- dplyr::select(dplyr::filter(clustCounts, conf==max(conf)), latitude, longitude, conf)
+      
+      clustCounts <- data.frame(id, hr, clustCounts, stringsAsFactors = F)
+    }
+    
+    #for(i in 1:ncol(clustCounts)) clustCounts[[i]] <- as.character(clustCounts[[i]])
+    
+    return(clustCounts)
+  }, error = function(e) {
+   return(
+     data.frame(id=id, hr=hr, latitude=NA, longitude=NA, conf = NA, stringsAsFactors = F)
+   )
+  })
+}
+--------------
+prep-logs.R
+sparkEnvir <- list(#spark.spark.num.executors='1',
+                   #spark.driver.memory = "2g",
+                   #spark.executor.cores='2',
+                   #spark.executor.memory='1g',
+                   spark.dynamicAllocation.enabled = "true",
+                   spark.dynamicAllocation.initialExecutors="40",
+                   spark.rdd.compress = "true",
+                   spark.shuffle.service.enabled = "true",
+                   appName = "RStudioSparkR"
+)
+
+if (nchar(Sys.getenv("SPARK_HOME")) < 1) {
+  Sys.setenv(SPARK_HOME = "/opt/cloudera/parcels/SPARK2-2.2.0.cloudera1-1.cdh5.12.0.p0.142354/lib/spark2/")
+}
+
+library(SparkR, lib.loc = c(file.path(Sys.getenv("SPARK_HOME"), "R", "lib")))
+
+Sys.setenv("SPARKR_SUBMIT_ARGS"="--master yarn sparkr-shell")
+
+sc <- sparkR.session(master = "yarn", sparkConfig = sparkEnvir)
+
+samplog <- sql("SELECT * FROM clustergps.part6 WHERE id in (select distinct(id) from clustergps.part6 limit 10)")
+
+samplog <- sql("SELECT * FROM clustergps.part6")
+
+schema <- structType(structField("id", "string"),
+                     structField("hr", "integer"),
+                     structField("latitude", "double"),
+                     structField("longitude", "double"),
+                     structField("confidence", "double"))
+
+result <- gapply(
+  samplog,
+  c("id", "hr"),
+  kms,
+  schema)
+
+res <- collect(result)
+
+SparkR::write.df(df = result,
+                      path ="hdfs:///user/hive/warehouse/clustergps/part6/part6",
+                      source="parquet",
+                      mode="overwrite")
+======================
+prepLogs <- function()
+{
+  library(ndjson)
+  library(dplyr)
+  library(lubridate)
+  
+  samplog <- stream_in("/home/russel_ebizu/clustergps/part4.log")
+  
+  samplog <- select(samplog, id, location.timestamp, location.latitude, location.longitude)
+  
+  names(samplog) <- c("id", "timestamp", "latitude", "longitude")
+  
+  samplog$timestamp <- as.POSIXct(samplog$timestamp/1000,origin='1970-01-01')
+  
+  samplog <- mutate(samplog, hr = hour(timestamp))
+  
+  n <- nrow(samplog)
+  
+  k <- ceiling(n/1e6)
+  
+  if(!dir.exists("part4"))
+    dir.create("part4")
+  
+  for(i in 1:k)
+  {
+    startRow <- (i-1)*1e6 + 1
+    
+    endRow <- ifelse(n-(i-1)*1e6 > 1e6, i*1e6, n)
+    
+    samplogPart <- samplog[startRow:endRow,]
+    
+    write.table(samplogPart, paste0("part4/part4_", i, ".csv"), quote = F, sep=",", row.names = F, col.names = F)
+  }
+  
+  samplogPart <- NULL
+  samplog <- NULL
+  
+  system(intern = T, "hdfs dfs -mkdir hdfs:///user/hive/warehouse/clustergps/part4")
+  system(intern = T, "hdfs dfs -put part4 hdfs:///user/hive/warehouse/clustergps/")
+  system(intern = T, "hive -e \"create external table clustergps.part4(id string, time1 timestamp, latitude double, longitude double, hr int) row format delimited fields terminated by ',' lines terminated by '\n' location 'hdfs:///user/hive/warehouse/clustergps/part4/';\"")
+}
+=========================

@@ -1,0 +1,1 @@
+kmeans of logged gps locations based on hour of day implemented in spark using the sparklyr/SparkR packages
